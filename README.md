@@ -34,8 +34,8 @@ for Speech-to-Text (STT) and transcription pipelines.
 
 1. **Clone the repository:**
    ```bash
-   git clone <repository-url>
-   cd converter-service
+   git clone git@github.com:sajid-bs23/STTPrepConverter.git
+   cd STTPrepConverter
    ```
 
 2. **Configure Environment:**
@@ -156,10 +156,12 @@ You can easily test the API using Postman. Follow these steps for the `POST /job
 ### 🧪 Testing
 
 The service includes local helper endpoints to simplify end-to-end testing without external webhook services:
+
 - **Webhook Mock:** `POST /jobs/test-callback`
 - **Upload Mock:** `PUT /jobs/test-upload`
 
 You can use these as `callback_url` and `output_url` for local tests:
+
 ```bash
 # Example end-to-end test using the mock endpoints
 curl -X POST http://localhost:8000/jobs \
