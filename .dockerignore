@@ -1,0 +1,43 @@
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Environment
+.env
+.env.example
+.venv
+venv
+env
+
+# IDEs
+.idea
+.vscode
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Project Specific
+temp_storage
+*.log
+input.mp4
+input2.mkv
+
+# Testing
+.pytest_cache
+tests
+.coverage
+htmlcov
+
+# Misc
+README.md
+REQUIREMENTS.md
+CHANGELOG.md
+test.sh
