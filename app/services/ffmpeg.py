@@ -6,11 +6,14 @@ from typing import Optional, Callable, Dict
 from app.config import settings
 from app.utils.logging import logger
 
+
 class FFmpegError(Exception):
     pass
 
+
 class NoAudioTrackError(FFmpegError):
     pass
+
 
 async def validate_audio_track(input_path: Path):
     """
@@ -25,34 +28,35 @@ async def validate_audio_track(input_path: Path):
         "-of", "csv=p=0",
         str(input_path)
     ]
-    
+
     logger.info("validating_audio_track", path=str(input_path))
-    
+
     process = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
     stdout, stderr = await process.communicate()
-    
+
     if process.returncode != 0:
         logger.error("ffprobe_failed", error=stderr.decode().strip())
         raise FFmpegError(f"ffprobe failed: {stderr.decode().strip()}")
-    
+
     if not stdout.strip():
         logger.warning("no_audio_track_found", path=str(input_path))
         raise NoAudioTrackError(f"No audio track found in {input_path.name}")
-    
+
     logger.info("audio_track_validated", streams=stdout.decode().strip().split('\n'))
 
-async def convert_video(
-    input_path: Path,
-    output_path: Path,
-    job_id: str,
-    on_progress: Optional[Callable[[float], None]] = None
+
+async def process_media(
+        input_path: Path,
+        output_path: Path,
+        job_id: str,
+        on_progress: Optional[Callable[[float], None]] = None
 ):
     """
-    Converts video to 16kHz mono WAV using FFmpeg with audio optimization filters.
+    Converts media (video or audio) to optimized MP3 (16kHz mono) for STT.
     Parses execution progress from stdout.
     """
     # Optimized filter chain for STT
@@ -91,7 +95,7 @@ async def convert_video(
     # But since we don't know the total duration easily without another ffprobe call,
     # we'll just log milestones or use percentage if we had total duration.
     # For now, let's just parse milestones by time if possible, or just emit raw time.
-    
+
     async def log_output(stream):
         while True:
             line = await stream.readline()
@@ -102,14 +106,14 @@ async def convert_video(
                 try:
                     time_ms = int(line_str.split('=')[1])
                     # Every 10 seconds of output, log a milestone
-                    if time_ms % 10000000 < 500000: # Rough approximation
-                         logger.info("ffmpeg_progress", job_id=job_id, time_ms=time_ms)
+                    if time_ms % 10000000 < 500000:  # Rough approximation
+                        logger.info("ffmpeg_progress", job_id=job_id, time_ms=time_ms)
                 except:
                     pass
 
     # We also want to capture stderr to a log file for debugging
     log_file_path = output_path.parent / "ffmpeg.log"
-    
+
     async def capture_stderr(stream):
         with open(log_file_path, "wb") as f:
             while True:

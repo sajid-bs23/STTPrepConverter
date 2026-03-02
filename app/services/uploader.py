@@ -8,11 +8,12 @@ from app.utils.logging import logger
 from app.utils.security import is_safe_url
 from app.utils.retry import retry_with_backoff
 
+
 async def upload_output_wav(
-    file_path: Path,
-    output_url: str,
-    auth_token: str,
-    job_id: str
+        file_path: Path,
+        output_url: str,
+        auth_token: str,
+        job_id: str
 ):
     """
     Uploads the resulting WAV file to the caller-supplied URL via HTTP PUT.
@@ -35,7 +36,7 @@ async def upload_output_wav(
             # Run file reading in a thread pool to avoid blocking the event loop
             with open(file_path, "rb") as f:
                 while True:
-                    chunk = await asyncio.to_thread(f.read, 256 * 1024) # 256KB chunks
+                    chunk = await asyncio.to_thread(f.read, 256 * 1024)  # 256KB chunks
                     if not chunk:
                         break
                     yield chunk
@@ -53,7 +54,7 @@ async def upload_output_wav(
             return response
 
     logger.info("upload_started", job_id=job_id, url=output_url)
-    
+
     await retry_with_backoff(
         do_upload,
         max_retries=settings.UPLOAD_MAX_RETRIES,
@@ -61,15 +62,16 @@ async def upload_output_wav(
         exceptions=(httpx.HTTPStatusError, httpx.RequestError),
         job_id=job_id
     )
-    
+
     logger.info("upload_completed", job_id=job_id)
 
+
 async def fire_webhook(
-    callback_url: str,
-    job_id: str,
-    status: str,
-    error: Optional[str] = None,
-    auth_token: Optional[str] = None
+        callback_url: str,
+        job_id: str,
+        status: str,
+        error: Optional[str] = None,
+        auth_token: Optional[str] = None
 ):
     """
     Sends a POST request to the callback URL with the final job status.
@@ -84,7 +86,7 @@ async def fire_webhook(
         "status": status,
         "error": error
     }
-    
+
     headers = {"Content-Type": "application/json"}
     if auth_token:
         headers["Authorization"] = f"Bearer {auth_token}"

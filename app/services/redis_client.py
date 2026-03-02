@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 _redis: Optional[Redis] = None
 _last_loop = None
 
+
 def get_redis_client() -> Redis:
     global _redis, _last_loop
     try:
@@ -21,14 +22,16 @@ def get_redis_client() -> Redis:
     if _redis is None or current_loop != _last_loop:
         _redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
         _last_loop = current_loop
-    
+
     return _redis
+
 
 async def close_redis():
     global _redis
     if _redis:
         await _redis.aclose()
         _redis = None
+
 
 # Job state management helpers (Redis Hashes)
 async def create_job(job_id: str, input_path: str):
@@ -45,22 +48,24 @@ async def create_job(job_id: str, input_path: str):
     # SET NX to enforce idempotency
     return await client.hset(job_key, mapping=data)
 
+
 async def update_job_status(job_id: str, status: str, error: Optional[str] = None):
     client = get_redis_client()
     job_key = f"job:{job_id}"
     updates = {"status": status}
-    
+
     if status == "processing" and not await client.hget(job_key, "started_at"):
         updates["started_at"] = datetime.utcnow().isoformat() + "Z"
-    
+
     if status in ("completed", "failed"):
         updates["completed_at"] = datetime.utcnow().isoformat() + "Z"
         if error:
             updates["error"] = error
         # Set expiry for terminal states
-        await client.expire(job_key, 604800) # 7 days
-    
+        await client.expire(job_key, 604800)  # 7 days
+
     await client.hset(job_key, mapping=updates)
+
 
 async def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     client = get_redis_client()

@@ -1,14 +1,16 @@
-# Video-to-Audio Converter Microservice (STTPrepConverter)
+# Media-to-Audio Converter Microservice (STTPrepConverter)
 
-A high-performance, production-grade microservice designed to convert video files into optimized audio (16kHz mono Mp3)
-for Speech-to-Text (STT) and transcription pipelines.
+A high-performance, production-grade microservice designed to convert **video or audio files** into optimized MP3
+(16 kHz mono) for Speech-to-Text (STT) and transcription pipelines.
 
 ## 🚀 Features
 
-- **Optimal Audio for AI:** Automatic highpass/lowpass filtering, silence removal, and volume normalization (
-  `loudnorm`).
+- **Universal Media Input:** Accepts any video (`mp4`, `mkv`, `mov`, `webm`, …) or audio (`mp3`, `wav`, `ogg`, `flac`,
+  `m4a`, …) file supported by FFmpeg.
+- **STT-Optimized Output:** Outputs a 16 kHz mono MP3 with automatic highpass/lowpass filtering, silence removal, and
+  loudness normalization (`loudnorm`).
 - **Scalable Architecture:** Built with **FastAPI**, **Celery**, and **Redis** for efficient asynchronous processing.
-- **Large File Support:** Handles videos up to 4GB using streaming data paths to maintain a low memory footprint.
+- **Large File Support:** Handles files up to 4 GB using streaming data paths to maintain a low memory footprint.
 - **Safety First:**
     - **SSRF Protection:** Validates webhooks and upload URLs against internal/private IP ranges.
     - **Disk Guard:** Monitors storage capacity before accepting new jobs.
@@ -55,18 +57,18 @@ for Speech-to-Text (STT) and transcription pipelines.
 
 `POST /jobs`
 
-Accepts a video file upload and enqueues it for conversion.
+Accepts a video or audio file and enqueues it for STT-optimized MP3 conversion.
 
 **Request:** `multipart/form-data`
 
-| Field                 | Type          | Required | Description                                                            |
-|-----------------------|---------------|----------|------------------------------------------------------------------------|
-| `file`                | binary        | ✅        | The video file (Accepted MIME: `video/*`, `application/octet-stream`). |
-| `output_url`          | string (URL)  | ✅        | Pre-authenticated URL for HTTP PUT upload of the resulting WAV.        |
-| `output_auth_token`   | string        | ✅        | Bearer token for the `output_url`.                                     |
-| `callback_url`        | string (URL)  | ❌        | Webhook URL for status updates (POST).                                 |
-| `callback_auth_token` | string        | ❌        | Optional Bearer token for the callback.                                |
-| `job_id`              | string (UUID) | ❌        | Optional custom ID for idempotency.                                    |
+| Field                 | Type          | Required | Description                                                                                                        |
+|-----------------------|---------------|----------|--------------------------------------------------------------------------------------------------------------------|
+| `file`                | binary        | ✅        | The media file to convert. Accepted: any video or audio format (`video/*`, `audio/*`, `application/octet-stream`). |
+| `output_url`          | string (URL)  | ✅        | Pre-authenticated URL for HTTP PUT upload of the resulting MP3.                                                    |
+| `output_auth_token`   | string        | ✅        | Bearer token for the `output_url`.                                                                                 |
+| `callback_url`        | string (URL)  | ❌        | Webhook URL for status updates (POST).                                                                             |
+| `callback_auth_token` | string        | ❌        | Optional Bearer token for the callback.                                                                            |
+| `job_id`              | string (UUID) | ❌        | Optional custom ID for idempotency.                                                                                |
 
 **Success Response (`202 Accepted`):**
 
@@ -92,11 +94,8 @@ Accepts a video file upload and enqueues it for conversion.
   "status": "queued | processing | uploading | completed | failed",
   "created_at": "...",
   "started_at": "...",
-  // null if not yet started
   "completed_at": "...",
-  // null if not finished
   "error": null
-  // string if failed
 }
 ```
 
@@ -131,39 +130,33 @@ queued → processing → uploading → completed
 
 ## 📮 Testing with Postman
 
-You can easily test the API using Postman. Follow these steps for the `POST /jobs` endpoint:
-
 1. **Method & URL:** Set the method to `POST` and the URL to `http://localhost:8000/jobs`.
 2. **Body:** Select `form-data`.
 3. **Fields:**
 
-    | Key                   | Type   | Value                                    |
-    |-----------------------|--------|------------------------------------------|
-    | `file`                | `File` | (Select your video file)                 |
-    | `output_url`          | `Text` | `https://your-webhook-site.com/upload`   |
-    | `output_auth_token`   | `Text` | `your-token`                             |
-    | `callback_url`        | `Text` | `https://your-webhook-site.com/callback` |
-    | `callback_auth_token` | `Text` | `your-callback-token` (Optional)         |
-    | `job_id`              | `Text` | `custom-uuid` (Optional)                 |
-
-4. **Headers:** Postman will automatically set the `Content-Type` to `multipart/form-data` with the correct boundary
-   when you use the `form-data` body type.
+| Key                   | Type   | Value                                                 |
+|-----------------------|--------|-------------------------------------------------------|
+| `file`                | `File` | Select a video **or** audio file                      |
+| `output_url`          | `Text` | `http://localhost:8000/jobs/test-upload/output.mp3`   |
+| `output_auth_token`   | `Text` | `test`                                                |
+| `callback_url`        | `Text` | `http://localhost:8000/jobs/test-callback` (Optional) |
+| `callback_auth_token` | `Text` | `your-callback-token` (Optional)                      |
+| `job_id`              | `Text` | `custom-uuid` (Optional)                              |
 
 > [!TIP]
 > Use a service like [Webhook.site](https://webhook.site) to quickly generate test URLs for `output_url` and
-`callback_url` to observe the service's out-bound requests.
+`callback_url` to observe the service's outbound requests.
 
-### 🧪 Testing
+### 🧪 Local Helper Endpoints
 
-The service includes local helper endpoints to simplify end-to-end testing without external webhook services:
+The service includes mock endpoints to simplify end-to-end testing without external services:
 
 - **Webhook Mock:** `POST /jobs/test-callback`
-- **Upload Mock:** `PUT /jobs/test-upload`
+- **Upload Mock:** `PUT /jobs/test-upload/{filename}`
 
-You can use these as `callback_url` and `output_url` for local tests:
+**Example — submit a video file:**
 
 ```bash
-# Example end-to-end test using the mock endpoints
 curl -X POST http://localhost:8000/jobs \
   -F "file=@input.mp4" \
   -F "output_url=http://api:8000/jobs/test-upload/output.mp3" \
@@ -171,8 +164,15 @@ curl -X POST http://localhost:8000/jobs \
   -F "callback_url=http://api:8000/jobs/test-callback"
 ```
 
-The service includes a comprehensive suite of unit tests. These are configured via `pytest.ini` and cover security,
-storage, FFmpeg processing, and uploader services.
+**Example — submit an audio file:**
+
+```bash
+curl -X POST http://localhost:8000/jobs \
+  -F "file=@recording.wav" \
+  -F "output_url=http://api:8000/jobs/test-upload/recording.mp3" \
+  -F "output_auth_token=test" \
+  -F "callback_url=http://api:8000/jobs/test-callback"
+```
 
 ### Running Tests Locally
 
@@ -188,8 +188,6 @@ storage, FFmpeg processing, and uploader services.
 
 ### Running Tests in Docker
 
-You can also run tests inside the API container:
-
 ```bash
 docker compose exec api pytest
 ```
@@ -197,6 +195,3 @@ docker compose exec api pytest
 ## 📜 License
 
 This project is licensed under the MIT License.
-
-
-
