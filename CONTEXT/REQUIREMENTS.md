@@ -1,7 +1,8 @@
-# Video-to-Audio Converter Microservice — Requirements
+# Media-to-Audio Converter Microservice — Requirements
 
 > **Purpose of this document:** A complete, AI-coding-tool-friendly specification for building a production-grade
-> video-to-audio conversion microservice. Follow every section in order. Do not skip constraints or error-handling rules.
+> media-to-audio conversion microservice. Follow every section in order. Do not skip constraints or error-handling
+> rules.
 
 ---
 
@@ -9,16 +10,24 @@
 
 A Python-based HTTP microservice that:
 
-1. Accepts a video file upload (multipart) from an external caller.
+1. Accepts a **video or audio** file upload (multipart) from an external caller.
 2. Stores the file temporarily on local disk.
 3. Enqueues a conversion job (Celery + Redis).
-4. A Celery worker picks up the job, converts the video to a 16 kHz mono WAV using FFmpeg with audio-optimisation
-   filters.
-5. Uploads the resulting WAV to a caller-supplied URL (authenticated via a token provided at upload time).
+4. A Celery worker picks up the job, converts the media to a **16 kHz mono MP3** using FFmpeg with audio-optimisation
+   filters suited for Speech-to-Text pipelines.
+5. Uploads the resulting MP3 to a caller-supplied URL (authenticated via a token provided at upload time).
 6. Notifies the caller via a webhook/callback URL with the final job status.
 7. Cleans up all temporary files regardless of outcome.
 
-**Primary use-case:** Pre-processing long meeting recordings (minutes to hours) for downstream Speech-to-Text pipelines.
+**Primary use-case:** Pre-processing long meeting recordings (minutes to hours) for downstream Speech-to-Text (STT)
+pipelines.
+
+**Supported input formats:**
+
+- **Video:** `mp4`, `mkv`, `mov`, `avi`, `webm`, and any other container supported by FFmpeg.
+- **Audio:** `mp3`, `wav`, `ogg`, `flac`, `m4a`, `aac`, and any other audio format supported by FFmpeg.
+
+**Output format:** `mp3` (16 kHz, mono, 128 kbps, normalized), optimised for STT ingestion.
 
 ---
 
@@ -55,7 +64,7 @@ converter-service/
 │   ├── worker/
 │   │   ├── __init__.py
 │   │   ├── celery_app.py   # Celery instance & config
-│   │   └── tasks.py        # convert_video task
+│   │   └── tasks.py        # process_media task
 │   ├── services/
 │   │   ├── storage.py      # Temp file lifecycle helpers
 │   │   ├── ffmpeg.py       # FFmpeg wrapper
@@ -65,8 +74,10 @@ converter-service/
 │       └── retry.py
 ├── tests/
 │   ├── conftest.py
-│   ├── test_api.py
-│   └── test_tasks.py
+│   ├── test_ffmpeg.py
+│   ├── test_storage.py
+│   ├── test_uploader.py
+│   └── test_security.py
 └── scripts/
     └── healthcheck.sh
 ```
@@ -117,14 +128,14 @@ FFMPEG_BIN=ffmpeg
 
 **Request:** `multipart/form-data`
 
-| Field                 | Type          | Required | Description                                                                            |
-|-----------------------|---------------|----------|----------------------------------------------------------------------------------------|
-| `file`                | binary        | ✅        | The video file to convert. Accepted MIME: `video/*`, `application/octet-stream`.       |
-| `output_url`          | string (URL)  | ✅        | Pre-authenticated URL where the resulting WAV must be uploaded (HTTP PUT).             |
-| `output_auth_token`   | string        | ✅        | Bearer token sent as `Authorization: Bearer <token>` header when uploading the output. |
-| `callback_url`        | string (URL)  | ❌        | Webhook URL to receive a POST with the final job status.                               |
-| `callback_auth_token` | string        | ❌        | Optional Bearer token for the callback URL.                                            |
-| `job_id`              | string (UUID) | ❌        | Caller-supplied idempotency ID. If omitted, the service generates one.                 |
+| Field                 | Type          | Required | Description                                                                                                                            |
+|-----------------------|---------------|----------|----------------------------------------------------------------------------------------------------------------------------------------|
+| `file`                | binary        | ✅        | The media file to convert. Accepted: any video or audio format supported by FFmpeg (`video/*`, `audio/*`, `application/octet-stream`). |
+| `output_url`          | string (URL)  | ✅        | Pre-authenticated URL where the resulting MP3 must be uploaded (HTTP PUT).                                                             |
+| `output_auth_token`   | string        | ✅        | Bearer token sent as `Authorization: Bearer <token>` header when uploading the output.                                                 |
+| `callback_url`        | string (URL)  | ❌        | Webhook URL to receive a POST with the final job status.                                                                               |
+| `callback_auth_token` | string        | ❌        | Optional Bearer token for the callback URL.                                                                                            |
+| `job_id`              | string (UUID) | ❌        | Caller-supplied idempotency ID. If omitted, the service generates one.                                                                 |
 
 **Success Response `202 Accepted`:**
 
@@ -152,11 +163,8 @@ FFMPEG_BIN=ffmpeg
   "status": "queued | processing | uploading | completed | failed",
   "created_at": "...",
   "started_at": "...",
-  // null if not yet started
   "completed_at": "...",
-  // null if not finished
   "error": null
-  // string if failed
 }
 ```
 
@@ -196,48 +204,54 @@ queued → processing → uploading → completed
 - Enforce `MAX_UPLOAD_SIZE_MB`: track bytes written; if exceeded, delete partial file and return `413`.
 - Detect MIME type from the first 512 bytes using `python-magic` as a secondary validation (warn but do not reject —
   some proxies strip MIME correctly).
+- Accept both video (`video/*`) and audio (`audio/*`, `application/octet-stream`) MIME types.
 
 ---
 
-## 7. Celery Task — `convert_video`
+## 7. Celery Task — `process_media`
 
 ### 7.1 Task Signature
 
 ```python
 @celery_app.task(
     bind=True,
-    name="converter.tasks.convert_video",
+    name="converter.tasks.process_media",
     acks_late=True,  # Ack only after success/terminal failure
     reject_on_worker_lost=True,  # Requeue if worker crashes mid-task
     max_retries=3,
     default_retry_delay=30,
 )
-def convert_video(self, job_id: str): ...
+def process_media(self, job_id: str, output_url: str, output_auth_token: str,
+                  callback_url: Optional[str] = None, callback_auth_token: Optional[str] = None,
+                  original_filename: Optional[str] = None): ...
 ```
 
 ### 7.2 Task Execution Steps
 
 1. **Update status → `processing`** in Redis.
 2. **Resolve paths:**
-    - Input: `{TEMP_DIR}/{job_id}/input.*`
-    - Output: `{TEMP_DIR}/{job_id}/output.wav`
-3. **Run FFmpeg** (see §8). Capture `stdout` and `stderr`.
-4. **On FFmpeg failure:**
+    - Input: `{TEMP_DIR}/{job_id}/input.*` (any file extension, video or audio)
+    - Output: `{TEMP_DIR}/{job_id}/{original_basename}.mp3`
+3. **Validate audio track** via `ffprobe` — raise `NoAudioTrackError` if none found.
+4. **Run FFmpeg** (see §8). Capture `stdout` and `stderr`.
+5. **On FFmpeg failure:**
     - If `self.request.retries < max_retries`: retry with exponential backoff.
     - If retries exhausted: update status → `failed`, fire webhook, clean up, raise.
-5. **Update status → `uploading`**.
-6. **Upload output WAV** to `output_url` (see §9.1).
-7. **Update status → `completed`**.
-8. **Fire success webhook** (see §9.2).
-9. **Clean up temp directory** `{TEMP_DIR}/{job_id}/`.
+6. **Update status → `uploading`**.
+7. **Upload output MP3** to `output_url` (see §9.1).
+8. **Update status → `completed`**.
+9. **Fire success webhook** (see §9.2).
+10. **Clean up temp directory** `{TEMP_DIR}/{job_id}/`.
 
 ### 7.3 Task Failure & Retry Rules
 
 | Failure Type                             | Action                                                                                |
 |------------------------------------------|---------------------------------------------------------------------------------------|
+| No audio track in input file             | Immediate `failed`, no retry                                                          |
 | FFmpeg non-zero exit                     | Retry up to 3× with 30 s backoff, then `failed`                                       |
 | FFmpeg timeout (`SoftTimeLimitExceeded`) | Mark `failed`, clean up, fire webhook                                                 |
-| Output upload failure                    | Retry upload up to `UPLOAD_MAX_RETRIES` independently before marking `failed`         |
+| Output upload 4xx                        | Terminal `failed`                                                                     |
+| Output upload 5xx / network              | Retry upload up to `UPLOAD_MAX_RETRIES` independently before marking `failed`         |
 | Webhook delivery failure                 | Retry webhook up to `WEBHOOK_MAX_RETRIES`; **do not** fail the job for webhook errors |
 | Worker killed (OOM/crash)                | `reject_on_worker_lost=True` causes automatic requeue                                 |
 
@@ -257,24 +271,49 @@ stop_periods=-1:stop_duration=1:stop_threshold=-45dB,\
 loudnorm" \
   -ac 1 \
   -ar 16000 \
-  -c:a pcm_s16le \
+  -c:a libmp3lame \
+  -b:a 128k \
+  -progress pipe:1 \
   {output_path}
 ```
 
+**Key parameters:**
+
+- `-vn`: Strip video stream (no-op if input is audio-only).
+- `-ac 1`: Force mono channel.
+- `-ar 16000`: Resample to 16 kHz (optimal for STT models).
+- `-c:a libmp3lame -b:a 128k`: Encode as MP3 at 128 kbps.
+- Audio filter chain: highpass, lowpass, silence removal, loudness normalisation.
+
 ### 8.2 Implementation Rules
 
-- Execute via `subprocess.Popen` (not `os.system`).
+- Execute via `asyncio.create_subprocess_exec` (not `os.system`).
 - Pass `-progress pipe:1` to capture real-time progress from `stdout`; parse `out_time_ms` to emit progress logs.
 - Redirect `stderr` to a log file `{TEMP_DIR}/{job_id}/ffmpeg.log` for post-mortem debugging.
-- Use `CELERY_TASK_SOFT_TIME_LIMIT` to interrupt the process cleanly (`SIGTERM` on the subprocess then `SIGKILL` after 5
-  s).
-- **Never** pass user-controlled strings directly into the shell command — use a list-form `args` to prevent injection.
+- Use `CELERY_TASK_SOFT_TIME_LIMIT` to interrupt the process cleanly.
+- **Never** pass user-controlled strings directly into the shell command — use list-form `args` to prevent injection.
 - Validate the output file exists and has `size > 0` after FFmpeg exits successfully.
 
-### 8.3 Large File Considerations
+### 8.3 Audio-Specific Behaviour
+
+- **Video input:** `-vn` strips all video streams; only audio tracks are extracted and processed.
+- **Audio input:** `-vn` is a no-op; the audio stream is re-encoded/resampled to the target format.
+- Both flows are handled identically by FFmpeg — no branching logic required in the application code.
+
+### 8.4 Pre-processing Validation
+
+Before running FFmpeg, use `ffprobe` to confirm the input file contains at least one audio stream:
+
+```bash
+ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 {input_path}
+```
+
+If no audio stream is found, raise `NoAudioTrackError` and immediately mark the job as `failed`.
+
+### 8.5 Large File Considerations
 
 - FFmpeg processes files in a streaming fashion by default — no special chunking needed.
-- Ensure the Docker volume for `TEMP_DIR` has sufficient space (document recommended: ≥ 2× the max expected file size).
+- Ensure the Docker volume for `TEMP_DIR` has sufficient space (recommended: ≥ 2× the max expected file size).
 - Set `ulimit -n 65536` in the worker container to handle large file descriptors.
 
 ---
@@ -284,7 +323,7 @@ loudnorm" \
 ### 9.1 Output File Upload
 
 - HTTP `PUT` to `output_url`.
-- Headers: `Authorization: Bearer {output_auth_token}`, `Content-Type: audio/wav`.
+- Headers: `Authorization: Bearer {output_auth_token}`, `Content-Type: audio/mpeg`.
 - Stream the file using `httpx.AsyncClient` with `content=open(path, 'rb')` — **do not load into memory**.
 - Retry logic: up to `UPLOAD_MAX_RETRIES`, exponential backoff (`2^attempt` seconds), retry on `5xx` and network errors
   only. Do **not** retry `4xx` (auth/URL errors are terminal).
@@ -314,8 +353,8 @@ Fire a `POST` to `callback_url` with:
 ## 10. Temporary Storage Lifecycle
 
 - Every job's files live under `{TEMP_DIR}/{job_id}/`.
-- **Happy path:** temp dir deleted at end of `convert_video` task, inside a `finally` block.
-- **Fallback sweep:** A Celery `beat` periodic task (`cleanup_orphaned_files`) runs every 15 minutes and deletes any
+- **Happy path:** temp dir deleted at end of `process_media` task, inside a `finally` block.
+- **Fallback sweep:** A Celery `beat` periodic task (`cleanup_orphaned_files`) runs every 30 minutes and deletes any
   `{TEMP_DIR}/*` directories older than `TEMP_FILE_TTL_SECONDS` whose job status is `completed` or `failed`.
 - On API startup, validate that `TEMP_DIR` is writable; fail fast if not.
 
@@ -371,11 +410,6 @@ app.conf.update(
 - `CELERY_CONCURRENCY` controls parallel conversions per worker container.
 - Horizontal scaling: run multiple `worker` containers (all connect to same Redis). Docker Compose `--scale worker=N`.
 - Recommended starting point: 1 worker process per 2 CPU cores, capped by available disk I/O.
-
-### Queue Priority (optional, implement if needed)
-
-Define two queues: `high` (short files < 10 min) and `default` (everything else). Route based on file size detected at
-upload time.
 
 ---
 
@@ -455,7 +489,7 @@ volumes:
 ## 14. Observability & Logging
 
 - Use Python `structlog` for structured JSON logging throughout.
-- Log at every state transition, FFmpeg progress milestone (every 10%), upload start/end, webhook delivery attempt.
+- Log at every state transition, FFmpeg progress milestone, upload start/end, webhook delivery attempt.
 - Include `job_id` in every log line as a structured field.
 - **Do not log `output_auth_token` or `callback_auth_token`** — mask them as `***`.
 - Expose a `/metrics` endpoint (Prometheus format) using `prometheus-fastapi-instrumentator`. Key metrics:
@@ -486,6 +520,7 @@ volumes:
 | File exceeds size limit     | `413`                    | Job not created                          | No                  |
 | Invalid URL format          | `422`                    | Job not created                          | No                  |
 | Redis unavailable at submit | `503`                    | —                                        | No                  |
+| No audio track in input     | `202` (already accepted) | Immediate `failed`, no retry             | Yes (failed)        |
 | FFmpeg exits non-zero       | `202` (already accepted) | Retry × 3, then `failed`                 | Yes (failed)        |
 | FFmpeg timeout              | `202`                    | Immediate `failed`, no retry             | Yes (failed)        |
 | Output upload 4xx           | `202`                    | Terminal `failed`                        | Yes (failed)        |
@@ -498,8 +533,8 @@ volumes:
 
 ## 17. Testing Requirements
 
-- **Unit tests** (`pytest`): FFmpeg wrapper, uploader retry logic, webhook delivery, state machine transitions. Mock
-  `subprocess` and `httpx`.
+- **Unit tests** (`pytest`): FFmpeg wrapper (video input, audio input, no-audio failure), uploader retry logic,
+  webhook delivery, state machine transitions. Mock `subprocess` and `httpx`.
 - **Integration tests**: Spin up Redis in Docker (use `pytest-docker` or `testcontainers`). Submit real job payloads;
   assert status transitions.
 - **Load test** (optional, `locust`): Simulate 10 concurrent uploads of 500 MB files; assert no job losses.
@@ -514,11 +549,12 @@ The following edge cases were identified and resolved during the planning and im
 | ID        | Edge Case              | Resolution                                                                                                                                        |
 |-----------|------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
 | **EC-01** | **Disk Exhaustion**    | Added `MIN_DISK_SPACE_GB` check in API (`POST /jobs`) and Health endpoint. Fails fast if space is insufficient.                                   |
-| **EC-02** | **No Audio Track**     | Added `ffprobe` validation step in `convert_video` task. Jobs with no audio streams are marked `failed` immediately.                              |
+| **EC-02** | **No Audio Track**     | Added `ffprobe` validation step in `process_media` task. Jobs with no audio streams are marked `failed` immediately.                              |
 | **EC-03** | **SSRF Attacks**       | Implemented URL validation in `uploader.py` using `ipaddress` to block internal/private/loopback ranges for `output_url` and `callback_url`.      |
-| **EC-04** | **Orphaned Files**     | Added `boot_cleanup` to lifespan events to wipe temp storage on startup. Periodic 15-min sweep handles cleanup of completed/failed job leftovers. |
+| **EC-04** | **Orphaned Files**     | Added `boot_cleanup` to lifespan events to wipe temp storage on startup. Periodic 30-min sweep handles cleanup of completed/failed job leftovers. |
 | **EC-05** | **Idempotency**        | Uses `SET NX` in Redis. If a `job_id` is reused, the service returns the existing job's status instead of creating a new one.                     |
 | **EC-06** | **Large File Uploads** | Streaming upload implementation with a hard byte-count cap (`MAX_UPLOAD_SIZE_MB`) during the write process to prevent OOM and disk filling.       |
+| **EC-07** | **Audio-only Input**   | FFmpeg's `-vn` flag is a no-op for audio-only files. The same command handles both video and audio inputs without code branching.                 |
 
 ---
 
@@ -530,9 +566,9 @@ Follow this sequence to avoid circular dependency issues:
 2. `app/utils/logging.py` — Structured logger setup.
 3. `app/worker/celery_app.py` — Celery instance (no tasks yet).
 4. `app/services/storage.py` — Temp dir helpers.
-5. `app/services/ffmpeg.py` — FFmpeg subprocess wrapper + tests.
+5. `app/services/ffmpeg.py` — FFmpeg subprocess wrapper (`process_media`, `validate_audio_track`) + tests.
 6. `app/services/uploader.py` — Upload + webhook with retry + tests.
-7. `app/worker/tasks.py` — `convert_video` task wiring steps 1–9.
+7. `app/worker/tasks.py` — `process_media` task wiring steps 1–10.
 8. `app/api/schemas.py` — Pydantic models.
 9. `app/api/routes.py` — FastAPI routes.
 10. `app/main.py` — App factory + lifespan.
@@ -541,12 +577,12 @@ Follow this sequence to avoid circular dependency issues:
 
 ---
 
-## 19. Out of Scope (for this service)
+## 20. Out of Scope (for this service)
 
 - STT / transcription — downstream concern.
 - Long-term storage of audio files — caller's responsibility via `output_url`.
 - Authentication of the API itself — handled at infrastructure level.
-- Resumable/chunked uploads from the video source — future enhancement if needed.
+- Resumable/chunked uploads from the source — future enhancement if needed.
 
 ---
 

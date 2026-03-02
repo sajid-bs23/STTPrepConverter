@@ -2,6 +2,7 @@ import structlog
 import logging
 import sys
 
+
 def setup_logging():
     structlog.configure(
         processors=[
@@ -23,6 +24,7 @@ def setup_logging():
         stream=sys.stdout,
         level=logging.INFO,
     )
+
 
 logger = structlog.get_logger()
 setup_logging()

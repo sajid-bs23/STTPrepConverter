@@ -6,6 +6,7 @@ import os
 # Explicitly load environment variables from .env file
 load_dotenv()
 
+
 class Settings(BaseSettings):
     # We still keep model_config for extra flexibility, 
     # but environment variables already loaded by load_dotenv() will take precedence.
@@ -45,5 +46,6 @@ class Settings(BaseSettings):
     # Security
     ALLOW_HTTP_CALLBACKS: bool = False
     ALLOW_PRIVATE_IPS: bool = False
+
 
 settings = Settings()

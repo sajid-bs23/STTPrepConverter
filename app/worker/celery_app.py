@@ -15,7 +15,7 @@ celery_app.conf.update(
     worker_max_tasks_per_child=settings.CELERY_MAX_TASKS_PER_CHILD,
     task_soft_time_limit=settings.CELERY_TASK_SOFT_TIME_LIMIT,
     task_time_limit=settings.CELERY_TASK_TIME_LIMIT,
-    broker_transport_options={"visibility_timeout": 8000}, # Must be > task_time_limit
+    broker_transport_options={"visibility_timeout": 8000},  # Must be > task_time_limit
     timezone="UTC",
 )
 

@@ -22,15 +22,15 @@ def run_async(coro):
 
 @celery_app.task(
     bind=True,
-    name="converter.tasks.convert_video",
+    name="converter.tasks.process_media",
     acks_late=True,
     reject_on_worker_lost=True,
     max_retries=3,
     default_retry_delay=30,
 )
-def convert_video(self, job_id: str, output_url: str, output_auth_token: str, callback_url: Optional[str] = None, callback_auth_token: Optional[str] = None, original_filename: Optional[str] = None):
+def process_media(self, job_id: str, output_url: str, output_auth_token: str, callback_url: Optional[str] = None, callback_auth_token: Optional[str] = None, original_filename: Optional[str] = None):
     """
-    Main background task to convert video to WAV and upload it.
+    Main background task to process media to optimized MP3 and upload it.
     """
     logger.info("task_received", job_id=job_id)
     
@@ -44,7 +44,7 @@ def convert_video(self, job_id: str, output_url: str, output_auth_token: str, ca
         error_msg = "Input file not found."
         run_async(finish_job(job_id, "failed", error_msg, callback_url, callback_auth_token))
         return
-
+    
     input_path = input_files[0]
     output_path = job_dir / "output.mp3"
 
@@ -53,7 +53,7 @@ def convert_video(self, job_id: str, output_url: str, output_auth_token: str, ca
         run_async(ffmpeg.validate_audio_track(input_path))
 
         # 3. Run FFmpeg
-        run_async(ffmpeg.convert_video(input_path, output_path, job_id))
+        run_async(ffmpeg.process_media(input_path, output_path, job_id))
 
         # 4. Update status -> uploading
         run_async(redis_client.update_job_status(job_id, "uploading"))
@@ -92,6 +92,7 @@ def convert_video(self, job_id: str, output_url: str, output_auth_token: str, ca
     finally:
         # 7. Clean up temp directory
         logger.info("cleanup_skipped_for_debugging", job_id=job_id)
+        # DEBUG: comment out the below line to skip cleanup
         # storage.cleanup_job_dir(job_id)
 
 async def finish_job(job_id: str, status: str, error: str = None, callback_url: str = None, callback_auth_token: str = None):
